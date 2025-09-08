@@ -1,0 +1,6 @@
+streamlit>=1.36
+networkx>=3.3
+pandas>=2.2
+pyvis>=0.3.2
+altair>=5.3
+lxml>=4.9  # ensures GraphML read/write works reliably
