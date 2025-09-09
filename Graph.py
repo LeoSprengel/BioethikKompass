@@ -100,6 +100,35 @@ def df_for_descriptors(G: nx.MultiDiGraph, desc_ids: List[str], lang_code: str) 
     return pd.DataFrame(rows).sort_values(["label", "descriptor_id"]).reset_index(drop=True)
 
 
+def doi_or_link(n: Dict) -> str:
+    """
+    Return a clickable URL:
+      1) n['doi_url'] if present (expects full URL),
+      2) n['doi'] -> normalized to https://doi.org/<doi>,
+      3) n['url'] if present,
+      4) Google Scholar query for the title.
+    """
+    doi_url = str(n.get("doi_url", "")).strip()
+    if doi_url:
+        return doi_url
+
+    doi = str(n.get("doi", "")).strip()
+    if doi:
+        low = doi.lower()
+        if low.startswith("http://") or low.startswith("https://"):
+            return doi
+        doi = doi.replace("doi:", "").strip()
+        return f"https://doi.org/{doi}"
+
+    url = str(n.get("url", "")).strip()
+    if url:
+        return url
+
+    title = str(n.get("title", n.get("label", "")))
+    q = urllib.parse.quote(title)
+    return f"https://scholar.google.com/scholar?q={q}"
+
+
 def df_for_papers(G: nx.MultiDiGraph, items: List[Tuple[str, dict]]) -> pd.DataFrame:
     rows = []
     for pid, stats in items:
@@ -109,11 +138,17 @@ def df_for_papers(G: nx.MultiDiGraph, items: List[Tuple[str, dict]]) -> pd.DataF
             "title": n.get("title", n.get("label", "")),
             "journal": n.get("journal", ""),
             "date_published": n.get("date_published", ""),
+            "link": doi_or_link(n),                   # NEW: link in main table
             "descriptors_shared": stats["desc_count"],
             "weight_sum": stats["weight_sum"],
         })
-    df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["paper_node","title","journal","date_published","descriptors_shared","weight_sum"])
-    return df.sort_values(["weight_sum", "descriptors_shared", "title"], ascending=[False, False, True]).reset_index(drop=True)
+    df = pd.DataFrame(rows) if rows else pd.DataFrame(
+        columns=["paper_node","title","journal","date_published","link","descriptors_shared","weight_sum"]
+    )
+    return df.sort_values(
+        ["weight_sum", "descriptors_shared", "title"],
+        ascending=[False, False, True]
+    ).reset_index(drop=True)
 
 
 def build_preview_subgraph(G: nx.MultiDiGraph, file_node: str, selected_desc: List[str], top_papers: List[str]) -> nx.MultiDiGraph:
@@ -132,66 +167,76 @@ def build_preview_subgraph(G: nx.MultiDiGraph, file_node: str, selected_desc: Li
     return H
 
 
-def show_pyvis(H: nx.MultiDiGraph, lang_code: str, height_px: int = 600):
+def show_pyvis(H: nx.MultiDiGraph, lang_code: str, height_px: int = 600, enable_click_open: bool = True):
+    """
+    Render a small network preview with PyVis.
+    Double-click on a PAPER node opens its DOI/URL in a new tab (if enable_click_open=True).
+    """
     net = Network(height=f"{height_px}px", width="100%", directed=True, notebook=False)
     for n, data in H.nodes(data=True):
         kind = str(data.get("kind", "")).lower()
         label = data.get("label", "")
         if kind == "descriptor":
             label = get_desc_label(data, lang_code) or label
-        title = []
+
+        # Build tooltip
+        title_lines = []
         for k, v in data.items():
-            title.append(f"<b>{k}</b>: {str(v)[:200]}")
-        tooltip = "<br>".join(title)
+            title_lines.append(f"<b>{k}</b>: {str(v)[:200]}")
+        tooltip = "<br>".join(title_lines)
+
+        # Color/shape
         color = "#6baed6" if kind == "file" else ("#31a354" if kind == "paper" else "#636363")
         shape = "box" if kind in {"file", "paper"} else "ellipse"
-        net.add_node(n, label=label, title=tooltip, color=color, shape=shape)
+
+        # Make paper nodes *clickable*: store href + add an <a> in tooltip
+        href = ""
+        if kind == "paper":
+            href = doi_or_link(data)
+            if href:
+                tooltip = tooltip + f'<br><b>link</b>: <a href="{href}" target="_blank">{href}</a>'
+
+        net.add_node(
+            n, label=label, title=tooltip, color=color, shape=shape,
+            href=href  # custom attr we’ll use in injected JS
+        )
+
     for u, v, d in H.edges(data=True, keys=False):
         et = d.get("type", "")
         lab = f"{et}" if d.get("weight") in (None, "", 0) else f"{et} ({d.get('weight')})"
         net.add_edge(u, v, title=json.dumps(d, ensure_ascii=False)[:500], label=lab, arrows="to")
+
+    # Generate HTML and inject a small JS handler for double-click → open href
     html = net.generate_html(notebook=False)
+    if enable_click_open:
+        inject = """
+<script type="text/javascript">
+(function(){
+  // 'nodes' and 'network' are defined by pyvis template
+  if (typeof network !== 'undefined' && typeof nodes !== 'undefined') {
+    network.on("doubleClick", function (params) {
+      if (params.nodes && params.nodes.length > 0) {
+        var id = params.nodes[0];
+        var n = nodes.get(id);
+        if (n && n.href) {
+          window.open(n.href, "_blank");
+        }
+      }
+    });
+  }
+})();
+</script>
+"""
+        # place right before closing body for safety
+        if "</body>" in html:
+            html = html.replace("</body>", inject + "\n</body>")
+        else:
+            html = html + inject
+
     components.html(html, height=height_px + 40, scrolling=True)
 
 
-# --------------- UPDATED helper for Article links (uses doi_url) ---------------
-def doi_or_link(n: Dict) -> str:
-    """
-    Return a clickable URL: doi_url (preferred), else DOI string, else 'url' attr, else Google Scholar.
-    Handles:
-      - doi_url already a full URL
-      - bare DOI in doi_url or doi (with/without 'doi:' prefix)
-    """
-    # New attribute first
-    doi_url = str(n.get("doi_url", "")).strip()
-    if doi_url:
-        low = doi_url.lower()
-        if low.startswith("http://") or low.startswith("https://"):
-            return doi_url
-        # treat as bare DOI
-        doi_url = doi_url.replace("doi:", "", 1).strip()
-        return f"https://doi.org/{doi_url}"
-
-    # Legacy 'doi' (may be bare or full URL)
-    doi = str(n.get("doi", "")).strip()
-    if doi:
-        low = doi.lower()
-        if low.startswith("http://") or low.startswith("https://"):
-            return doi
-        doi = doi.replace("doi:", "", 1).strip()
-        return f"https://doi.org/{doi}"
-
-    # Legacy 'url'
-    url = str(n.get("url", "")).strip()
-    if url:
-        return url
-
-    # Fallback: Scholar query
-    title = str(n.get("title", n.get("label", "")))
-    q = urllib.parse.quote(title)
-    return f"https://scholar.google.com/scholar?q={q}"
-
-
+# --------------- NEW helpers for Article selection & timelines ---------------
 def mentions_from_selected_papers(G: nx.MultiDiGraph, paper_ids: List[str], lang_code: str) -> pd.DataFrame:
     """Rows: paper_node, title, date (datetime), period, descriptor_id, descriptor_label, weight."""
     rows = []
@@ -346,7 +391,14 @@ st.subheader("Step 4 — Papers connected via selected descriptors")
 paper_stats = papers_via_descriptors(G, selected_desc_ids)
 df_papers = df_for_papers(G, paper_stats)
 
-st.dataframe(df_papers, use_container_width=True, hide_index=True)
+st.dataframe(
+    df_papers,
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "link": st.column_config.LinkColumn("Link")  # NEW: clickable links in main table
+    },
+)
 st.download_button(
     "Download results (CSV)",
     df_papers.to_csv(index=False).encode("utf-8"),
@@ -362,7 +414,8 @@ else:
     max_papers = st.slider("Max papers to show in preview", min_value=5, max_value=100, value=25, step=5)
     top_paper_ids = df_papers.head(max_papers)["paper_node"].tolist()
     subG = build_preview_subgraph(G, active_file, list(selected_desc_ids), top_paper_ids)
-    show_pyvis(subG, lang_code, height_px=650)
+    # Enable double-click to open DOI/URL
+    show_pyvis(subG, lang_code, height_px=650, enable_click_open=True)
 
 # ----------------------------- NEW: Step 5 & 6 -----------------------------
 st.subheader("Step 5 — Choose articles to analyze (timeline)")
@@ -459,7 +512,8 @@ else:
     )
     st.download_button(
         "Download timeline (top descriptors) CSV",
-        (top_series if not top_df.empty else pd.DataFrame()).to_csv(index=False).encode("utf-8"),
+        (top_df.groupby(["period", "descriptor_label"], as_index=False)["weight"].sum()
+         if not top_df.empty else pd.DataFrame()).to_csv(index=False).encode("utf-8"),
         file_name="descriptor_mentions_top.csv",
         mime="text/csv",
     )
@@ -473,7 +527,7 @@ for pid in selected_papers:
         "title": n.get("title", n.get("label", "")),
         "journal": n.get("journal", ""),
         "date_published": n.get("date_published", ""),
-        "link": doi_or_link(n),                # ← uses new doi_url-aware resolver
+        "link": doi_or_link(n),
     })
 df_sel = pd.DataFrame(paper_rows)
 
@@ -490,4 +544,4 @@ st.download_button(
     mime="text/csv",
 )
 
-st.caption("Tip: Change the language dropdown to switch descriptor labels (en/de/fr).")
+st.caption("Tip: Double-click paper nodes in the preview to open the DOI/URL. Switch descriptor labels via the language dropdown (en/de/fr).")
