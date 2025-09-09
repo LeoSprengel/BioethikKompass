@@ -24,7 +24,7 @@ except Exception:
     HAVE_ALTAIR = False
 
 
-DEFAULT_GRAPHML = "Data/bethes_graph_plus_papers_1000.graphml"
+DEFAULT_GRAPHML = "paper_graph.graphml"
 LANG_CHOICES = ["en", "de", "fr", "label"]  # "label" = fallback if specific lang missing
 
 
