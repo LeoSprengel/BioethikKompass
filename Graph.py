@@ -24,7 +24,7 @@ except Exception:
     HAVE_ALTAIR = False
 
 
-DEFAULT_GRAPHML = "paper_graph.graphml"
+DEFAULT_GRAPHML = "Data/bethes_graph_plus_papers_1000.graphml"
 LANG_CHOICES = ["en", "de", "fr", "label"]  # "label" = fallback if specific lang missing
 
 
@@ -154,20 +154,39 @@ def show_pyvis(H: nx.MultiDiGraph, lang_code: str, height_px: int = 600):
     components.html(html, height=height_px + 40, scrolling=True)
 
 
-# --------------- NEW helpers for Article selection & timelines ---------------
+# --------------- UPDATED helper for Article links (uses doi_url) ---------------
 def doi_or_link(n: Dict) -> str:
-    """Return a clickable URL: DOI (preferred), else 'url' attr, else Google Scholar query."""
+    """
+    Return a clickable URL: doi_url (preferred), else DOI string, else 'url' attr, else Google Scholar.
+    Handles:
+      - doi_url already a full URL
+      - bare DOI in doi_url or doi (with/without 'doi:' prefix)
+    """
+    # New attribute first
+    doi_url = str(n.get("doi_url", "")).strip()
+    if doi_url:
+        low = doi_url.lower()
+        if low.startswith("http://") or low.startswith("https://"):
+            return doi_url
+        # treat as bare DOI
+        doi_url = doi_url.replace("doi:", "", 1).strip()
+        return f"https://doi.org/{doi_url}"
+
+    # Legacy 'doi' (may be bare or full URL)
     doi = str(n.get("doi", "")).strip()
-    url = str(n.get("url", "")).strip()
     if doi:
         low = doi.lower()
         if low.startswith("http://") or low.startswith("https://"):
             return doi
-        # drop a leading 'doi:' if present
-        doi = doi.replace("doi:", "").strip()
+        doi = doi.replace("doi:", "", 1).strip()
         return f"https://doi.org/{doi}"
+
+    # Legacy 'url'
+    url = str(n.get("url", "")).strip()
     if url:
         return url
+
+    # Fallback: Scholar query
     title = str(n.get("title", n.get("label", "")))
     q = urllib.parse.quote(title)
     return f"https://scholar.google.com/scholar?q={q}"
@@ -454,18 +473,15 @@ for pid in selected_papers:
         "title": n.get("title", n.get("label", "")),
         "journal": n.get("journal", ""),
         "date_published": n.get("date_published", ""),
-        "link": doi_or_link(n),
+        "link": doi_or_link(n),                # ← uses new doi_url-aware resolver
     })
 df_sel = pd.DataFrame(paper_rows)
 
-# Use LinkColumn so links are clickable in the table
 st.dataframe(
     df_sel,
     use_container_width=True,
     hide_index=True,
-    column_config={
-        "link": st.column_config.LinkColumn("Link")
-    },
+    column_config={"link": st.column_config.LinkColumn("Link")},
 )
 st.download_button(
     "Download selected articles (CSV)",
