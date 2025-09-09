@@ -212,13 +212,27 @@ def show_pyvis(H: nx.MultiDiGraph, lang_code: str, height_px: int = 600, enable_
         inject = """
 <script type="text/javascript">
 (function(){
-  // 'nodes' and 'network' are defined by pyvis template
   if (typeof network !== 'undefined' && typeof nodes !== 'undefined') {
+    // After the layout stabilizes once, freeze positions and disable physics
+    network.once("stabilizationIterationsDone", function () {
+      var pos = network.getPositions();
+      var updates = [];
+      Object.keys(pos).forEach(function(id){
+        updates.push({id: id, x: pos[id].x, y: pos[id].y, fixed: {x:true, y:true}});
+      });
+      nodes.update(updates);
+      network.setOptions({
+        physics: { enabled: false },
+        interaction: { dragNodes: false, dragView: true, zoomView: true }
+      });
+    });
+
+    // Keep your double-click-to-open for paper nodes
     network.on("doubleClick", function (params) {
       if (params.nodes && params.nodes.length > 0) {
         var id = params.nodes[0];
         var n = nodes.get(id);
-        if (n && n.href) {
+        if (n && n.n_kind === "paper" && n.href) {
           window.open(n.href, "_blank");
         }
       }
@@ -227,6 +241,7 @@ def show_pyvis(H: nx.MultiDiGraph, lang_code: str, height_px: int = 600, enable_
 })();
 </script>
 """
+
         # place right before closing body for safety
         if "</body>" in html:
             html = html.replace("</body>", inject + "\n</body>")
